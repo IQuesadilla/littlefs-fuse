@@ -1,0 +1,13 @@
+[wrap-file]
+directory = littlefs-2.10.1
+source_url = https://github.com/littlefs-project/littlefs/archive/refs/tags/v2.10.1.tar.gz
+source_filename = littlefs-2.10.1.tar.gz
+source_hash = 620691695d65ad161eed1247122b63ad03e0251d8617864ba086a563afe98216
+patch_filename = littlefs_2.10.1-1_patch.zip
+patch_url = https://wrapdb.mesonbuild.com/v2/littlefs_2.10.1-1/get_patch
+patch_hash = ddf09a4592bf9a5d1c59e635e6585fcaf5fd1f0d0a6a2ad066a8653e8041c431
+source_fallback_url = https://github.com/mesonbuild/wrapdb/releases/download/littlefs_2.10.1-1/littlefs-2.10.1.tar.gz
+wrapdb_version = 2.10.1-1
+
+[provide]
+littlefs = littlefs_dep

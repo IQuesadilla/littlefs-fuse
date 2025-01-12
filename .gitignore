@@ -2,3 +2,6 @@
 *.d
 *.a
 lfs
+image
+subprojects/*
+!subprojects/*.wrap
