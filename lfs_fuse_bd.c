@@ -14,6 +14,7 @@
 #include <assert.h>
 #if !defined(__FreeBSD__)
 #include <sys/ioctl.h>
+#include <sys/stat.h>
 #include <linux/fs.h>
 #elif defined(__FreeBSD__)
 #define BLKSSZGET DIOCGSECTORSIZE
@@ -21,34 +22,23 @@
 #include <sys/disk.h>
 #endif
 
+struct my_context {
+  int fd;
+};
 
 // Block device wrapper for user-space block devices
 int lfs_fuse_bd_create(struct lfs_config *cfg, const char *path) {
-    int fd = open(path, O_RDWR);
-    if (fd < 0) {
+    struct stat statbuf = {0};
+    int err = stat(path, &statbuf);
+    if (err < 0) {
         return -errno;
     }
-    cfg->context = (void*)(intptr_t)fd;
 
     // get sector size
-    if (!cfg->block_size) {
-        long ssize;
-        int err = ioctl(fd, BLKSSZGET, &ssize);
-        if (err) {
-            return -errno;
-        }
-        cfg->block_size = ssize;
-    }
+    cfg->block_size = 512; // Must be preset
 
     // get size in sectors
-    if (!cfg->block_count) {
-        uint64_t size;
-        int err = ioctl(fd, BLKGETSIZE64, &size);
-        if (err) {
-            return -errno;
-        }
-        cfg->block_count = size / cfg->block_size;
-    }
+    cfg->block_count = statbuf.st_size / cfg->block_size;
 
     // setup function pointers
     cfg->read  = lfs_fuse_bd_read;
@@ -56,31 +46,41 @@ int lfs_fuse_bd_create(struct lfs_config *cfg, const char *path) {
     cfg->erase = lfs_fuse_bd_erase;
     cfg->sync  = lfs_fuse_bd_sync;
 
+    int fd = open(path, O_RDWR);
+    if (fd < 0) {
+        return -errno;
+    }
+    
+    struct my_context *ctx = malloc(sizeof(struct my_context));
+    ctx->fd = fd;
+    cfg->context = ctx;
+
     return 0;
 }
 
 void lfs_fuse_bd_destroy(const struct lfs_config *cfg) {
-    int fd = (intptr_t)cfg->context;
-    close(fd);
+    struct my_context *ctx = cfg->context;
+    close(ctx->fd);
+  free(ctx);
 }
 
 int lfs_fuse_bd_read(const struct lfs_config *cfg, lfs_block_t block,
         lfs_off_t off, void *buffer, lfs_size_t size) {
-    int fd = (intptr_t)cfg->context;
+    struct my_context *ctx = cfg->context;
     uint8_t *buffer_ = buffer;
 
     // check if read is valid
     assert(block < cfg->block_count);
 
     // go to block
-    off_t err = lseek(fd, (off_t)block*cfg->block_size + (off_t)off, SEEK_SET);
+    off_t err = lseek(ctx->fd, (off_t)block*cfg->block_size + (off_t)off, SEEK_SET);
     if (err < 0) {
         return -errno;
     }
 
     // read block
     while (size > 0) {
-        ssize_t res = read(fd, buffer_, (size_t)size);
+        ssize_t res = read(ctx->fd, buffer_, (size_t)size);
         if (res < 0) {
             return -errno;
         }
@@ -94,21 +94,21 @@ int lfs_fuse_bd_read(const struct lfs_config *cfg, lfs_block_t block,
 
 int lfs_fuse_bd_prog(const struct lfs_config *cfg, lfs_block_t block,
         lfs_off_t off, const void *buffer, lfs_size_t size) {
-    int fd = (intptr_t)cfg->context;
+    struct my_context *ctx = cfg->context;
     const uint8_t *buffer_ = buffer;
 
     // check if write is valid
     assert(block < cfg->block_count);
 
     // go to block
-    off_t err = lseek(fd, (off_t)block*cfg->block_size + (off_t)off, SEEK_SET);
+    off_t err = lseek(ctx->fd, (off_t)block*cfg->block_size + (off_t)off, SEEK_SET);
     if (err < 0) {
         return -errno;
     }
 
     // write block
     while (size > 0) {
-        ssize_t res = write(fd, buffer_, (size_t)size);
+        ssize_t res = write(ctx->fd, buffer_, (size_t)size);
         if (res < 0) {
             return -errno;
         }
@@ -126,9 +126,9 @@ int lfs_fuse_bd_erase(const struct lfs_config *cfg, lfs_block_t block) {
 }
 
 int lfs_fuse_bd_sync(const struct lfs_config *cfg) {
-    int fd = (intptr_t)cfg->context;
+    struct my_context *ctx = cfg->context;
 
-    int err = fsync(fd);
+    int err = fsync(ctx->fd);
     if (err) {
         return -errno;
     }

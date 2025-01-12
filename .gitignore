@@ -1,6 +1,8 @@
 *.o
 *.d
 *.a
+.cache
+.vscode
 lfs
 image
 subprojects/*
