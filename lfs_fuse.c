@@ -13,18 +13,22 @@
 #define _XOPEN_SOURCE 700
 #endif
 
-#include <fuse/fuse.h>
 #include "lfs.h"
 #include "lfs_util.h"
 #include "lfs_fuse_bd.h"
 
+#include <unistd.h>
 #include <stdio.h>
 #include <inttypes.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <poll.h>
 
+#include <fuse/fuse.h>
+//#include <fuse/fuse_compat.h>
+#include <fuse/fuse_lowlevel.h>
 
 // littefs-fuse version
 //
@@ -40,7 +44,7 @@
 
 // config and other state
 static struct lfs_config config = {0};
-static const char *device = NULL;
+static const char *device = "/tmp/diskfile";
 static bool stat_ = false;
 static bool format = false;
 static bool migrate = false;
@@ -166,14 +170,16 @@ int lfs_fuse_migrate(void) {
 }
 
 int lfs_fuse_mount(void) {
-    int err = lfs_fuse_bd_create(&config, device);
-    if (err) {
-        return err;
-    }
+  int err = lfs_fuse_bd_create(&config, device);
+  if (err) {
+    return err;
+  }
 
-    lfs_fuse_defaults(&config);
+  lfs_fuse_defaults(&config);
 
-    return lfs_mount(&lfs, &config);
+  lfs_format(&lfs, &config);
+
+  return lfs_mount(&lfs, &config);
 }
 
 void lfs_fuse_destroy(void *eh) {
@@ -464,19 +470,21 @@ static struct fuse_operations lfs_fuse_ops = {
 
 // binding into fuse and general ui
 enum lfs_fuse_keys {
-    KEY_HELP,
-    KEY_VERSION,
-    KEY_STAT,
-    KEY_FORMAT,
-    KEY_MIGRATE,
-    KEY_DISK_VERSION,
+  KEY_HELP,
+  KEY_VERSION,
+  KEY_STAT,
+  KEY_FORMAT,
+  KEY_MIGRATE,
+  KEY_DISK_VERSION,
+  KEY_DISK_FILE,
 };
 
 #define OPT(t, p) { t, offsetof(struct lfs_config, p), 0}
 static struct fuse_opt lfs_fuse_opts[] = {
-    FUSE_OPT_KEY("--stat",      KEY_STAT),
-    FUSE_OPT_KEY("--format",    KEY_FORMAT),
-    FUSE_OPT_KEY("--migrate",   KEY_MIGRATE),
+    FUSE_OPT_KEY("--stat",        KEY_STAT),
+    FUSE_OPT_KEY("--format",      KEY_FORMAT),
+    FUSE_OPT_KEY("--migrate",     KEY_MIGRATE),
+    {"--diskfile=",           -1U, KEY_DISK_FILE},
     {"-d=",                     -1U, KEY_DISK_VERSION},
     {"--disk_version=",         -1U, KEY_DISK_VERSION},
     OPT("-b=%"                  SCNu32, block_size),
@@ -528,11 +536,18 @@ int lfs_fuse_opt_proc(void *data, const char *arg,
     // option parsing
     switch (key) {
         case FUSE_OPT_KEY_NONOPT:
-            if (!device) {
-                device = strdup(arg);
-                return 0;
-            }
+            //if (!device) {
+                //device = strdup(arg);
+                //return 0;
+            //}
             break;
+
+        case KEY_DISK_FILE:
+            //device = strdup(arg);
+            device = strchr(arg, '=');
+            if (device)
+              device += 1;
+            return 0;
 
         case KEY_STAT:
             stat_ = true;
@@ -632,10 +647,10 @@ int main(int argc, char *argv[]) {
     // parse custom options
     struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
     fuse_opt_parse(&args, &config, lfs_fuse_opts, lfs_fuse_opt_proc);
-    if (!device) {
-        fprintf(stderr, "missing device parameter\n");
-        exit(1);
-    }
+    //if (!device) {
+        //fprintf(stderr, "missing device parameter\n");
+        //exit(1);
+    //}
 
     if (stat_) {
         // stat time, no mount
@@ -667,21 +682,74 @@ int main(int argc, char *argv[]) {
         exit(0);
     }
 
-    // go ahead and mount so errors are reported before backgrounding
-    int err = lfs_fuse_mount();
-    if (err) {
-        LFS_ERROR("%s", strerror(-err));
-        exit(-err);
+  printf("USING DEVICE: %s\n", device);
+
+  // go ahead and mount so errors are reported before backgrounding
+  int err = lfs_fuse_mount();
+  if (err) {
+    LFS_ERROR("%s", strerror(-err));
+    exit(-err);
+  }
+
+  // always single-threaded
+  fuse_opt_add_arg(&args, "-s");
+
+  // enter fuse
+  /*err = fuse_main(args.argc, args.argv, &lfs_fuse_ops, NULL);
+  if (err) {
+    lfs_fuse_destroy(NULL);
+  }*/
+
+  //struct fuse_session_ops ops = {0};
+
+  //struct fuse_session *se = fuse_session_new(&args, &lfs_fuse_ops, sizeof(lfs_fuse_ops));
+  //if (se == NULL)
+    //return -errno;
+
+  //struct fuse_chan_ops ch;
+  //struct fuse_chan *ch = fuse_mount("mnt", &args);
+  //struct fuse *f = fuse_new(ch, &args, &lfs_fuse_ops, sizeof(lfs_fuse_ops), NULL);
+  char *mountpoint = NULL;
+  printf("HERE1\n");
+  struct fuse *f = fuse_setup(args.argc, args.argv, &lfs_fuse_ops, sizeof(lfs_fuse_ops), &mountpoint, NULL, NULL);
+
+  unlink("/tmp/log.txt");
+  creat("/tmp/log.txt", 0666);
+  int logfd = open("/tmp/log.txt", O_RDWR);
+  dprintf(logfd, "------\nMounted at: %s\n", mountpoint);
+  close(logfd);
+
+  struct fuse_session *se = fuse_get_session(f);
+  struct fuse_chan *ch = fuse_session_next_chan(se, NULL);
+  int fd = fuse_chan_fd(ch);
+
+  struct pollfd fds[2];
+  fds[0].fd = STDIN_FILENO;
+  fds[0].events = 0;//POLLIN | POLLHUP | POLLERR;
+  fds[0].revents = 0;
+  fds[1].fd = fd;
+  fds[1].events = POLLIN | POLLHUP | POLLOUT | POLLERR | POLLPRI | POLLNVAL;
+  fds[1].revents = 0;
+  do {
+    poll(fds, 2, -1);
+    if (fds[0].revents) {
+      logfd = open("/tmp/log.txt", O_RDWR | O_APPEND);
+      dprintf(logfd, "stdin quit\n");
+      close(logfd);
+      return 0;
     }
-
-    // always single-threaded
-    fuse_opt_add_arg(&args, "-s");
-
-    // enter fuse
-    err = fuse_main(args.argc, args.argv, &lfs_fuse_ops, NULL);
-    if (err) {
-        lfs_fuse_destroy(NULL);
+    if (fds[1].revents) {
+      fuse_loop(f);
     }
+    fds[0].revents = 0;
+    fds[1].revents = 0;
+  } while (fuse_exited(f));
 
-    return err;
+  fuse_destroy(f);
+
+  logfd = open("/tmp/log.txt", O_RDWR | O_APPEND);
+  dprintf(logfd, "fuse_exited\n");
+  close(logfd);
+
+  return 0;
 }

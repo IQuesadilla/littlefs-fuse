@@ -10,6 +10,8 @@
 
 #include "lfs.h"
 
+// Reset the file at the given location
+int lfs_fuse_bd_init(struct lfs_config *cfg, const char *path);
 
 // Create a block device with path to dev block device
 int lfs_fuse_bd_create(struct lfs_config *cfg, const char *path);
